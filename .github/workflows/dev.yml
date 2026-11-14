@@ -59,14 +59,15 @@ jobs:
             -Dquarkus.native.container-build=true \
             -Dquarkus.native.native-image-xmx=4g
 
-      # Dockerfile.native-micro: minimal image with /work/healthcheck.sh for the ECS container health check
+      # Dockerfile.native (ubi-minimal), like the data service: it ships curl, so the ECS health check
+      # "curl -f http://localhost:8080/q/health/live || exit 1" works as is
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -f src/main/docker/Dockerfile.native-micro -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -f src/main/docker/Dockerfile.native -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
