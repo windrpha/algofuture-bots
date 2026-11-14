@@ -1,0 +1,72 @@
+name: AlgoFuture Bots
+
+# Same flow as the data service: on every push to main, run the tests, build the Quarkus native image and push it
+# to Amazon ECR tagged latest and with the commit SHA. The ECS service runs that image; this workflow does not
+# change the service itself.
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  ECR_REPOSITORY: dev-v1-algofuture-bots
+
+# a newer push to main supersedes an older one still building, so ECR's latest always ends on the newest commit
+concurrency:
+  group: dev-deploy
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_DEV_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_DEV_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEV_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Clean build
+        run: ./gradlew clean
+
+      # unit tests only: no database or Telegram needed
+      - name: Run tests
+        run: ./gradlew test
+
+      # native-image runs inside the Mandrel builder container, so no GraalVM install is needed on the runner;
+      # the runner is x86_64, so the image is linux/amd64 (the ECS task must use the X86_64 architecture)
+      - name: Build Quarkus native image
+        run: |
+          ./gradlew quarkusBuild \
+            -Dquarkus.native.enabled=true \
+            -Dquarkus.package.jar.enabled=false \
+            -Dquarkus.native.container-build=true \
+            -Dquarkus.native.native-image-xmx=4g
+
+      # Dockerfile.native-micro: minimal image with /work/healthcheck.sh for the ECS container health check
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -f src/main/docker/Dockerfile.native-micro -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
