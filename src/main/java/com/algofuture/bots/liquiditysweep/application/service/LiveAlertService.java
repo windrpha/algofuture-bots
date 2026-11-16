@@ -17,10 +17,13 @@ import com.algofuture.bots.liquiditysweep.domain.service.MicroSizing;
 import com.algofuture.bots.liquiditysweep.domain.service.MicroSizing.Size;
 import com.algofuture.shared.journal.domain.model.LiveTradeRecord;
 import com.algofuture.shared.marketdata.domain.model.TradesBar1m;
+import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.Scheduler;
 import io.quarkus.scheduler.Trigger;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -74,6 +77,8 @@ public class LiveAlertService {
     /** Only per-process niceties: warnings already sent today and a pick already known to be too late. */
     private LocalDate day;
     private boolean warningSent, staleToday, dataWarningSent;
+    /** The pick that came too late today, described for the log. */
+    private String stalePick;
     /** For the health checks: when the loop started, last finished a run, last saw complete data, last failed. */
     private final Instant startedAt = Instant.now();
     private volatile Instant lastRun, lastData, lastFailure;
@@ -97,6 +102,18 @@ public class LiveAlertService {
 
     /** Identity of the scheduled job, to look up its next run for the status endpoint. */
     public static final String JOB = "live-alerts";
+
+    /** States at startup whether the loop is on and when it runs: a disabled loop never logs anything else. */
+    void onStart(@Observes StartupEvent event) {
+        var config = ConfigProvider.getConfig();
+        String schedule = "cron '%s' (%s)".formatted(config.getValue("alerts.cron", String.class),
+                config.getValue("alerts.cron-zone", String.class));
+        if (enabled) {
+            LOG.infof("Live alerts enabled: %s, symbols %s, telegram configured=%s", schedule, symbols, alerts.configured());
+        } else {
+            LOG.warnf("Live alerts DISABLED (set ALERTS_ENABLED=true to turn them on): %s", schedule);
+        }
+    }
 
     /** When it runs comes from application.properties ({@code alerts.cron}, {@code alerts.cron-zone}), read at startup. */
     @Scheduled(identity = JOB, cron = "{alerts.cron}", timeZone = "{alerts.cron-zone}",
@@ -128,7 +145,7 @@ public class LiveAlertService {
         }
         List<LiveTradeRecord> today = trades.findDay(day);
         if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::isOpen)) return "today's trade done";  // or all skipped
-        if (today.isEmpty() && staleToday) return "today's pick came too late, not announced";
+        if (today.isEmpty() && staleToday) return "nothing to do: today's signal (" + stalePick + ") was too late, no alert sent";
 
         Instant to = Instant.ofEpochSecond(now.getEpochSecond() / BAR.toSeconds() * BAR.toSeconds());
         Map<String, Double> lastClose = lastClosesIfComplete(to);
@@ -157,7 +174,10 @@ public class LiveAlertService {
         if (today.isEmpty()) {
             if (Duration.between(pick.trade().entryAt(), now).compareTo(STALE) > 0) {
                 staleToday = true;
-                return "today's pick was first seen more than " + STALE + " after its entry, not announced";
+                stalePick = describe(pick);
+                return "today's signal (%s) was first seen at %s CT, %d min after its entry (limit %d min): too late to take it, no alert sent"
+                        .formatted(stalePick, ct.toLocalTime().withSecond(0).withNano(0),
+                                Duration.between(pick.trade().entryAt(), now).toMinutes(), STALE.toMinutes());
             }
             announce(pick, lastClose.get(pick.contract().sourceSymbol()));
             announced = true;
@@ -221,6 +241,12 @@ public class LiveAlertService {
                     ? AlertMessages.entry(strategy, pick, account, sized.get(), lastPrice)
                     : AlertMessages.skipped(strategy, pick, account, MicroSizing.single(root, signalRisk)));
         }
+    }
+
+    private static String describe(DailyPick pick) {
+        SweepTrade t = pick.trade();
+        return "%s %s, entry %s at %s CT".formatted(pick.contract().root(), t.isLong() ? "long" : "short", t.entryPrice(),
+                t.entryAt().atZone(CONFIG.zone()).toLocalTime());
     }
 
     private void warnOnce(String message) {

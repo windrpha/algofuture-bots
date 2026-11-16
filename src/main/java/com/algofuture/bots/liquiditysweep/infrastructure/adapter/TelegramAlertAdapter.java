@@ -41,9 +41,14 @@ public class TelegramAlertAdapter implements AlertPort {
 
     @Override
     public void send(String text) {
+        deliver(text);
+    }
+
+    /** Sends {@code text} and tells whether Telegram accepted it; package-visible for the delivery test. */
+    boolean deliver(String text) {
         if (!configured()) {
             LOG.warnf("Telegram not configured, alert not sent:%n%s", text);
-            return;
+            return false;
         }
         String body = "chat_id=" + URLEncoder.encode(chatId.get(), StandardCharsets.UTF_8)
                 + "&text=" + URLEncoder.encode(text, StandardCharsets.UTF_8);
@@ -56,13 +61,15 @@ public class TelegramAlertAdapter implements AlertPort {
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
                 LOG.errorf("Telegram rejected the alert (HTTP %d): %s", response.statusCode(), response.body());
-            } else {
-                LOG.infof("Alert sent:%n%s", text);
+                return false;
             }
+            LOG.infof("Alert sent:%n%s", text);
+            return true;
         } catch (java.io.IOException e) {
             LOG.errorf("Telegram unreachable, alert not sent: %s%n%s", e.getMessage(), text);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        return false;
     }
 }
