@@ -105,8 +105,9 @@ public class LiveAlertService {
         if (!enabled) return;
         Instant now = Instant.now();
         try {
-            tick(now);
+            String outcome = tick(now);
             lastRun = now;
+            LOG.infof("Live alert run: %s (%d ms)", outcome, Duration.between(now, Instant.now()).toMillis());
         } catch (RuntimeException e) {
             lastFailure = now;
             lastError = e.getMessage();
@@ -114,20 +115,20 @@ public class LiveAlertService {
         }
     }
 
-    /** One evaluation at {@code now}; package-visible so tests can drive the clock. */
-    synchronized void tick(Instant now) {
+    /** One evaluation at {@code now}, returning what it did for the log; package-visible so tests can drive the clock. */
+    synchronized String tick(Instant now) {
         ZonedDateTime ct = now.atZone(CONFIG.zone());
         LocalTime time = ct.toLocalTime();
-        if (ct.getDayOfWeek() == DayOfWeek.SATURDAY || ct.getDayOfWeek() == DayOfWeek.SUNDAY) return;
-        if (time.isBefore(FIRST_RUN) || time.isAfter(LAST_RUN)) return;
+        if (ct.getDayOfWeek() == DayOfWeek.SATURDAY || ct.getDayOfWeek() == DayOfWeek.SUNDAY) return "weekend";
+        if (time.isBefore(FIRST_RUN) || time.isAfter(LAST_RUN)) return "outside the session window";
         if (firstTick == null) firstTick = now;
         if (!ct.toLocalDate().equals(day)) {
             day = ct.toLocalDate();
             warningSent = staleToday = false;
         }
         List<LiveTradeRecord> today = trades.findDay(day);
-        if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::isOpen)) return;  // done, or all skipped
-        if (today.isEmpty() && staleToday) return;
+        if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::isOpen)) return "today's trade done";  // or all skipped
+        if (today.isEmpty() && staleToday) return "today's pick came too late, not announced";
 
         Instant to = Instant.ofEpochSecond(now.getEpochSecond() / BAR.toSeconds() * BAR.toSeconds());
         Map<String, Double> lastClose = lastClosesIfComplete(to);
@@ -137,8 +138,9 @@ public class LiveAlertService {
                     && time.isAfter(FIRST_RUN.plus(DATA_STALE_AFTER))) {
                 alerts.send(AlertMessages.noMarketData(Duration.between(since, now).toMinutes()));
                 dataWarningSent = true;
+                return "no market data for the candle ending " + to.atZone(CONFIG.zone()).toLocalTime() + " CT, warning sent";
             }
-            return;
+            return "waiting for the candle ending " + to.atZone(CONFIG.zone()).toLocalTime() + " CT";
         }
         lastData = now;
         dataWarningSent = false;
@@ -148,22 +150,24 @@ public class LiveAlertService {
         Optional<DailyPick> found = run.picks().stream()
                 .filter(p -> CONFIG.dayOf(p.trade().entryAt()).equals(day))
                 .findFirst();
-        if (found.isEmpty()) return;
+        if (found.isEmpty()) return "no pick today yet";
         DailyPick pick = found.get();
 
+        boolean announced = false;
         if (today.isEmpty()) {
             if (Duration.between(pick.trade().entryAt(), now).compareTo(STALE) > 0) {
                 staleToday = true;
-                LOG.infof("Today's pick was first seen more than %s after its entry: not announced", STALE);
-                return;
+                return "today's pick was first seen more than " + STALE + " after its entry, not announced";
             }
             announce(pick, lastClose.get(pick.contract().sourceSymbol()));
+            announced = true;
             today = trades.findDay(day);
         }
 
-        List<LiveTradeRecord> open = today.stream().filter(LiveTradeRecord::isOpen).toList();
-        if (open.isEmpty()) return;
         SweepTrade t = pick.trade();
+        String what = "%s pick %s %s".formatted(announced ? "announced" : "tracking", pick.contract().root(), t.isLong() ? "long" : "short");
+        List<LiveTradeRecord> open = today.stream().filter(LiveTradeRecord::isOpen).toList();
+        if (open.isEmpty()) return what + ", no open trade";
         if (t.exitType() != ExitType.OPEN) {
             for (LiveTradeRecord row : open) {
                 double pnl = (row.isLong() ? t.exitPrice() - row.entryEstimate() : row.entryEstimate() - t.exitPrice())
@@ -172,13 +176,16 @@ public class LiveAlertService {
                     alerts.send(AlertMessages.exit(row, t.exitType(), t.exitPrice(), pnl));
                 }
             }
+            return what + ", exit " + t.exitType() + " for " + open.size() + " trade(s)";
         } else if (!time.isBefore(CLOSE_REMINDER)) {
             List<LiveTradeRecord> pending = open.stream().filter(r -> !r.reminderSent()).toList();
             if (!pending.isEmpty() && trades.markReminderSent(pending.stream().map(LiveTradeRecord::id).toList()) > 0) {
                 alerts.send(AlertMessages.closeReminder(pick.contract().root(),
                         t.isLong(), pending.stream().map(LiveTradeRecord::accountLabel).toList()));
+                return what + ", close reminder sent";
             }
         }
+        return what + ", " + open.size() + " open trade(s)";
     }
 
     /** Records the signal for every enabled account and sends each message only if THIS call recorded it. */
