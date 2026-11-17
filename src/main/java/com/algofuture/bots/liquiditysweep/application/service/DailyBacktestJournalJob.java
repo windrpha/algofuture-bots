@@ -17,8 +17,8 @@ import java.time.ZonedDateTime;
 import java.util.List;
 
 /**
- * After the close, re-runs the strategy 4.2 backtest over the last days and records its trades in the backtest journal
- * ({@code strategy_trade}, "liquidity sweep 4.2"), so the backtest series keeps growing next to the live signals in
+ * After the close, re-runs the strategy 4.3 backtest over the last days and records its trades in the backtest journal
+ * ({@code strategy_trade}, "liquidity sweep 4.3"), so the backtest series keeps growing next to the live signals in
  * {@code live_trade}. The journal upsert is idempotent, so covering several days also fills any day the service missed.
  */
 @ApplicationScoped
@@ -30,7 +30,7 @@ public class DailyBacktestJournalJob {
     static final Duration LOOKBACK = Duration.ofDays(7);
 
     static final SweepDetectorConfig CONFIG = SweepDetectorConfig.DAILY;
-    static final ConvictionConfig CONVICTION = ConvictionConfig.WITH_STOP_BUFFER;
+    static final ConvictionConfig CONVICTION = ConvictionConfig.WITH_STOP_WIDTH;
 
     private final RunDailyBacktestUseCase backtest;
     private final List<String> symbols;

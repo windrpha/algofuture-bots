@@ -167,6 +167,10 @@ class LiveAlertServiceTest {
         assertEquals(LiveTradeRecord.CLOSED, store.rows.get(0).status());
         assertEquals("tp", store.rows.get(0).exitType());
         assertEquals(360, store.rows.get(0).pnlUsd(), 1e-9);
+
+        // later runs say how the day ended, from live_trade
+        assertEquals("today's trade done: NQ short, nys-25k closed by TARGET at 21440.0 at 10:05 CT (pnl +$360)",
+                service.tick(Instant.parse("2026-11-11T16:20:20Z")));
     }
 
     @Test
@@ -181,6 +185,7 @@ class LiveAlertServiceTest {
         restarted.tick(Instant.parse("2026-11-11T15:40:20Z"));
         assertEquals(2, sent.size());
         assertTrue(sent.get(1).startsWith("🔴 STOP LOSS HIT") && sent.get(1).contains("you lose $120"), sent.get(1));
+        assertTrue(restarted.tick(Instant.parse("2026-11-11T15:45:20Z")).endsWith("closed by STOP at 21680.0 at 10:05 CT (pnl -$120)"));
     }
 
     @Test
@@ -227,6 +232,10 @@ class LiveAlertServiceTest {
         service.tick(Instant.parse("2026-11-11T16:10:20Z"));
         assertEquals(3, sent.size());
         assertTrue(sent.get(2).contains("Otra"), sent.get(2));
+
+        assertEquals("today's trade done: NQ short, nys-25k skipped (1 micro risks more than the account's max risk per "
+                        + "trade); other-50k closed by TARGET at 21386.0 at 10:05 CT (pnl +$936)",
+                service.tick(Instant.parse("2026-11-11T16:20:20Z")));
     }
 
     @Test
@@ -274,7 +283,8 @@ class LiveAlertServiceTest {
     void tooRiskyForOneMicro_isAnnouncedAsSkipped_once() {
         trade = trade(21795, ExitType.OPEN, null);                   // 175 points: 1 MNQ = $350 > $127
         service.tick(Instant.parse("2026-11-11T15:06:20Z"));
-        service.tick(Instant.parse("2026-11-11T15:07:20Z"));
+        assertEquals("today's trade done: NQ short, nys-25k skipped (1 micro risks more than the account's max risk per trade)",
+                service.tick(Instant.parse("2026-11-11T15:07:20Z")));
         assertEquals(1, sent.size());
         assertTrue(sent.get(0).contains("DO NOT TRADE"), sent.get(0));
     }

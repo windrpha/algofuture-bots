@@ -30,7 +30,8 @@ com.algofuture
         ├── domain/service/                 KeyLevelCalculator (ONH/ONL, PDH/PDL, PWH/PWL, H1 in 2.1, opening range ORH/ORL in 3.1), LiquiditySweepDetector,
         │                                   SweepTradeSimulator, SmtConfirmation, SessionSelector, RangeTarget (3.2),
         │                                   SwingLevels + ConvictionSelector (4.0: one trade per day by conviction),
-        │                                   FootprintReasons (4.1: thin extreme in the excursion footprint) (pure rules)
+        │                                   FootprintReasons (4.1: thin extreme in the excursion footprint),
+        │                                   StopWidth (4.3: skip stops wider than 3 ATR) (pure rules)
         ├── application/port/in|out/        RunLiquiditySweepBacktestUseCase, LiquiditySweepBarDataPort,
         │                                   TradeJournalPort
         ├── application/service/            RunLiquiditySweepBacktestService

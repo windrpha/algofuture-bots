@@ -29,12 +29,12 @@ class DailyBacktestJournalJobTest {
     private final DailyBacktestJournalJob job = new DailyBacktestJournalJob(backtest, List.of("NQ.FUT", "ES.FUT"));
 
     @Test
-    void afterTheClose_journals42_overTheLastWeek_includingToday() {
+    void afterTheClose_journals43_overTheLastWeek_includingToday() {
         job.run(Instant.parse("2026-11-13T21:30:00Z"));               // Friday 15:30 CT
         Call c = calls.get(0);
         assertTrue(c.journal());
-        assertSame(ConvictionConfig.WITH_STOP_BUFFER, c.conviction());
-        assertEquals("liquidity sweep 4.2", c.conviction().strategyName());
+        assertSame(ConvictionConfig.WITH_STOP_WIDTH, c.conviction());
+        assertEquals("liquidity sweep 4.3", c.conviction().strategyName());
         assertEquals(OffsetDateTime.parse("2026-11-06T06:00Z"), c.from());   // Nov 6 00:00 CT
         assertEquals(OffsetDateTime.parse("2026-11-14T05:59Z"), c.to());     // Nov 13 23:59 CT
     }

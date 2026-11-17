@@ -42,6 +42,9 @@ import java.util.Map;
  *
  * stopBuffer=ES:8 (needs footprint=true) runs 4.2: on each listed contract the stop goes that many ticks beyond the
  * sweep wick and the target follows at rewardRisk of the wider risk. Empty (default) = stop at the wick.
+ *
+ * maxRiskAtr=3.0 (needs a stopBuffer) runs 4.3: a sweep whose stop at the wick is wider than that many times the mean
+ * range of the 24 candles before its confirmation does not qualify (see {@link ConvictionConfig}). 0 (default) = off.
  */
 @Path("/liquidity-sweep/daily")
 @Produces(MediaType.APPLICATION_JSON)
@@ -65,6 +68,7 @@ public class DailySweepResource {
         @QueryParam("thinExtreme") @DefaultValue("0.19") public double thinExtreme;
         /** "ES:8" or "ES:8,NQ:0": ticks beyond the wick per contract root. */
         @QueryParam("stopBuffer") @DefaultValue("") public String stopBuffer;
+        @QueryParam("maxRiskAtr") @DefaultValue("0") public double maxRiskAtr;
     }
 
     private final RunDailyBacktestUseCase useCase;
@@ -106,7 +110,7 @@ public class DailySweepResource {
                     LocalTime.parse(q.lastSweep), ZoneId.of("America/Chicago"), true, true, q.openingRange);
             ConvictionConfig conviction = new ConvictionConfig(LocalTime.parse(q.strictUntil), q.earlyReasons,
                     q.lateReasons, Duration.ofMinutes(q.correlationMinutes), q.swingStrength,
-                    q.footprint ? new FootprintRules(q.thinExtreme) : null, stopBuffers(q.stopBuffer));
+                    q.footprint ? new FootprintRules(q.thinExtreme) : null, stopBuffers(q.stopBuffer), q.maxRiskAtr);
             List<String> symbols = Arrays.stream(q.symbols.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
             return CorsHelper.apply(Response.ok(useCase.run(symbols, OffsetDateTime.parse(q.from), OffsetDateTime.parse(q.to),
                     q.interval, config, conviction, journal))).build();

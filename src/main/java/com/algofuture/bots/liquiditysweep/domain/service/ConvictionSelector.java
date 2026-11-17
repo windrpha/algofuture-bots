@@ -40,9 +40,21 @@ public final class ConvictionSelector {
     public static List<Scored> onePerDay(List<Candidate> candidates, List<Map<LocalDate, Double>> gaps,
                                          Map<Candidate, List<Reason>> footprint, SweepDetectorConfig config,
                                          ConvictionConfig conviction) {
+        return onePerDay(candidates, gaps, footprint, Map.of(), config, conviction);
+    }
+
+    /**
+     * @param riskAtr stop width in ATRs per candidate ({@link StopWidth}, 4.3); a candidate wider than
+     *                {@link ConvictionConfig#maxRiskAtr()} does not qualify, but still counts as the other index's
+     *                sweep for {@link Reason#CORRELATED}
+     */
+    public static List<Scored> onePerDay(List<Candidate> candidates, List<Map<LocalDate, Double>> gaps,
+                                         Map<Candidate, List<Reason>> footprint, Map<Candidate, Double> riskAtr,
+                                         SweepDetectorConfig config, ConvictionConfig conviction) {
         List<Scored> qualified = new ArrayList<>();
         Map<Candidate, Scored> byCandidate = new HashMap<>();
         for (Candidate c : candidates) {
+            if (!conviction.stopNarrowEnough(riskAtr.getOrDefault(c, Double.NaN))) continue;
             List<Reason> reasons = reasons(c, candidates, gaps.get(c.symbolOrder()), config, conviction);
             reasons.addAll(footprint.getOrDefault(c, List.of()));
             if (reasons.size() < conviction.requiredReasons(c.entryAt().atZone(config.zone()).toLocalTime())) continue;

@@ -10,6 +10,7 @@ import com.algofuture.bots.liquiditysweep.domain.model.SessionConfig;
 import com.algofuture.bots.liquiditysweep.domain.model.SweepBacktest;
 import com.algofuture.bots.liquiditysweep.domain.model.SweepDetectorConfig;
 import com.algofuture.bots.liquiditysweep.domain.model.SweepTrade;
+import com.algofuture.bots.liquiditysweep.domain.service.StopWidth;
 import com.algofuture.shared.infrastructure.persistence.StrategyTradeRepository;
 import com.algofuture.shared.journal.domain.model.StrategyTrade;
 import com.algofuture.shared.journal.domain.model.StrategyTrade.UpsertOutcome;
@@ -47,6 +48,8 @@ public class LiquiditySweepJournalAdapter implements TradeJournalPort {
     private static final String FOOTPRINT_REASON = " Footprint reason: thin extreme (the two most extreme prices of "
             + "the excursion traded <= %.2f of an average price of it).";
     private static final String STOP_BUFFER = " Stop beyond the sweep wick by %s, target at the same R of the wider risk.";
+    private static final String STOP_WIDTH = " Skips sweeps whose stop at the wick is wider than %.2f times the mean range "
+            + "of the %d candles before the confirmation.";
     private static final List<String> TAGS = List.of("backtest", "liquidity_sweep");
     private static final List<String> SESSION_TAGS = List.of("backtest", "liquidity_sweep", "one_per_session");
     private static final List<String> DAILY_TAGS = List.of("backtest", "liquidity_sweep", "one_per_day", "conviction");
@@ -100,7 +103,8 @@ public class LiquiditySweepJournalAdapter implements TradeJournalPort {
         int strategyId = repository.ensureStrategy(conviction.strategyName(), DAILY_DESCRIPTION.formatted(
                 String.join("/", backtest.symbols()), cfg.sessionStart(), cfg.lastSweepTime(), cfg.openingRangeMinutes(),
                 conviction.earlyReasons(), conviction.strictUntil(), conviction.lateReasons(),
-                conviction.correlationWindow().toMinutes(), footprint + (buffers.isEmpty() ? "" : STOP_BUFFER.formatted(buffers)),
+                conviction.correlationWindow().toMinutes(), footprint + (buffers.isEmpty() ? "" : STOP_BUFFER.formatted(buffers))
+                        + (conviction.maxRiskAtr() > 0 ? STOP_WIDTH.formatted(conviction.maxRiskAtr(), StopWidth.ATR_BARS) : ""),
                 cfg.rewardRisk()));
         return upsert(strategyId, backtest.picks().stream().map(p -> {
             Map<String, Object> extra = Map.of(
@@ -108,7 +112,8 @@ public class LiquiditySweepJournalAdapter implements TradeJournalPort {
                     "conviction_reasons", p.reasons().stream().map(Enum::name).toList(),
                     "strict_until", conviction.strictUntil().toString(),
                     "swing_strength", conviction.swingStrength(),
-                    "stop_buffer_ticks", conviction.stopBufferTicks(p.contract().root()));
+                    "stop_buffer_ticks", conviction.stopBufferTicks(p.contract().root()),
+                    "max_risk_atr", conviction.maxRiskAtr());
             return toRow(p.trade(), p.contract(),
                     new Run(strategyId, backtest.runId(), backtest.interval(), cfg, extra, DAILY_TAGS));
         }).toList());

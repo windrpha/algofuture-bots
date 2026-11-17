@@ -18,6 +18,7 @@ import com.algofuture.bots.liquiditysweep.domain.service.ConvictionSelector.Scor
 import com.algofuture.bots.liquiditysweep.domain.service.FootprintReasons;
 import com.algofuture.bots.liquiditysweep.domain.service.SessionSelector.Candidate;
 import com.algofuture.bots.liquiditysweep.domain.service.StopBuffer;
+import com.algofuture.bots.liquiditysweep.domain.service.StopWidth;
 import com.algofuture.bots.liquiditysweep.domain.service.SweepTradeSimulator;
 import com.algofuture.shared.marketdata.domain.model.TradesBar1m;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -69,8 +70,15 @@ public class RunDailyBacktestService implements RunDailyBacktestUseCase {
         Map<Candidate, List<Reason>> footprint = conviction.footprint() == null
                 ? Map.of() : footprintReasons(candidates, markets, barDuration, conviction);
 
+        Map<Candidate, Double> riskAtr = new HashMap<>();
+        if (conviction.maxRiskAtr() > 0) {
+            for (Candidate c : candidates) {
+                riskAtr.put(c, StopWidth.riskOverAtr(c.sweep(), markets.get(c.symbolOrder()).bars()));
+            }
+        }
+
         List<DailyPick> picks = new ArrayList<>();
-        for (Scored s : ConvictionSelector.onePerDay(candidates, gaps, footprint, config, conviction)) {
+        for (Scored s : ConvictionSelector.onePerDay(candidates, gaps, footprint, riskAtr, config, conviction)) {
             SweepMarket market = markets.get(s.candidate().symbolOrder());
             double buffer = conviction.stopBufferTicks(market.contract().root()) * market.contract().tickSize();
             LiquiditySweep sweep = StopBuffer.apply(s.candidate().sweep(), buffer, config.rewardRisk());

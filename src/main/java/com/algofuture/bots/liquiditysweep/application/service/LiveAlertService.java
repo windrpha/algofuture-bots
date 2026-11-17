@@ -34,13 +34,15 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
- * Live alerts for strategy 4.2: every minute of the session it re-runs the exact backtest logic over the CLOSED 5m
+ * Live alerts for strategy 4.3: every minute of the session it re-runs the exact backtest logic over the CLOSED 5m
  * candles up to now and, when today's trade appears, records and announces it once PER FUNDED ACCOUNT, each sized in
  * micros for that account's own risk (or skipped for it); then the exit per account that took it, and one reminder at
  * 14:55 if it is still open. Re-running the backtest instead of a separate live engine keeps the alerts identical to
@@ -60,7 +62,7 @@ public class LiveAlertService {
     private static final Duration STALE = Duration.ofMinutes(10);
 
     static final SweepDetectorConfig CONFIG = SweepDetectorConfig.DAILY;
-    static final ConvictionConfig CONVICTION = ConvictionConfig.WITH_STOP_BUFFER;
+    static final ConvictionConfig CONVICTION = ConvictionConfig.WITH_STOP_WIDTH;
 
     private final RunDailyBacktestUseCase backtest;
     private final LiquiditySweepBarDataPort barData;
@@ -77,8 +79,6 @@ public class LiveAlertService {
     /** Only per-process niceties: warnings already sent today and a pick already known to be too late. */
     private LocalDate day;
     private boolean warningSent, staleToday, dataWarningSent;
-    /** The pick that came too late today, described for the log. */
-    private String stalePick;
     /** For the health checks: when the loop started, last finished a run, last saw complete data, last failed. */
     private final Instant startedAt = Instant.now();
     private volatile Instant lastRun, lastData, lastFailure;
@@ -144,8 +144,7 @@ public class LiveAlertService {
             warningSent = staleToday = false;
         }
         List<LiveTradeRecord> today = trades.findDay(day);
-        if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::isOpen)) return "today's trade done";  // or all skipped
-        if (today.isEmpty() && staleToday) return "nothing to do: today's signal (" + stalePick + ") was too late, no alert sent";
+        if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::isOpen)) return "today's trade done: " + outcome(today);
 
         Instant to = Instant.ofEpochSecond(now.getEpochSecond() / BAR.toSeconds() * BAR.toSeconds());
         Map<String, Double> lastClose = lastClosesIfComplete(to);
@@ -171,21 +170,25 @@ public class LiveAlertService {
         DailyPick pick = found.get();
 
         boolean announced = false;
+        double last = lastClose.get(pick.contract().sourceSymbol());
         if (today.isEmpty()) {
+            if (staleToday) {                                        // still followed, so the log shows how it ends
+                return "today's signal (%s) was too late, no alert sent; %s".formatted(describe(pick), progress(pick, last));
+            }
             if (Duration.between(pick.trade().entryAt(), now).compareTo(STALE) > 0) {
                 staleToday = true;
-                stalePick = describe(pick);
-                return "today's signal (%s) was first seen at %s CT, %d min after its entry (limit %d min): too late to take it, no alert sent"
-                        .formatted(stalePick, ct.toLocalTime().withSecond(0).withNano(0),
-                                Duration.between(pick.trade().entryAt(), now).toMinutes(), STALE.toMinutes());
+                return "today's signal (%s) was first seen at %s CT, %d min after its entry (limit %d min): too late to take it, no alert sent; %s"
+                        .formatted(describe(pick), ct.toLocalTime().withSecond(0).withNano(0),
+                                Duration.between(pick.trade().entryAt(), now).toMinutes(), STALE.toMinutes(),
+                                progress(pick, last));
             }
-            announce(pick, lastClose.get(pick.contract().sourceSymbol()));
+            announce(pick, last);
             announced = true;
             today = trades.findDay(day);
         }
 
         SweepTrade t = pick.trade();
-        String what = "%s pick %s %s".formatted(announced ? "announced" : "tracking", pick.contract().root(), t.isLong() ? "long" : "short");
+        String what = "%s pick (%s)".formatted(announced ? "announced" : "tracking", describe(pick));
         List<LiveTradeRecord> open = today.stream().filter(LiveTradeRecord::isOpen).toList();
         if (open.isEmpty()) return what + ", no open trade";
         if (t.exitType() != ExitType.OPEN) {
@@ -205,7 +208,7 @@ public class LiveAlertService {
                 return what + ", close reminder sent";
             }
         }
-        return what + ", " + open.size() + " open trade(s)";
+        return what + ", " + open.size() + " open trade(s); " + progress(pick, last);
     }
 
     /** Records the signal for every enabled account and sends each message only if THIS call recorded it. */
@@ -245,8 +248,31 @@ public class LiveAlertService {
 
     private static String describe(DailyPick pick) {
         SweepTrade t = pick.trade();
-        return "%s %s, entry %s at %s CT".formatted(pick.contract().root(), t.isLong() ? "long" : "short", t.entryPrice(),
-                t.entryAt().atZone(CONFIG.zone()).toLocalTime());
+        return "%s %s, entry %s at %s CT, SL %s, TP %s".formatted(pick.contract().root(), t.isLong() ? "long" : "short",
+                t.entryPrice(), t.entryAt().atZone(CONFIG.zone()).toLocalTime(), t.stopLoss(), t.takeProfit());
+    }
+
+    /** Where the trade stands: still open against the last close, or how and when it exited, in points. */
+    private static String progress(DailyPick pick, double last) {
+        SweepTrade t = pick.trade();
+        if (t.exitType() == ExitType.OPEN) {
+            return "still open, last %s (%+.2f pts)".formatted(last, t.isLong() ? last - t.entryPrice() : t.entryPrice() - last);
+        }
+        double pts = t.isLong() ? t.exitPrice() - t.entryPrice() : t.entryPrice() - t.exitPrice();
+        return "closed by %s at %s at %s CT (%+.2f pts)".formatted(t.exitType(), t.exitPrice(),
+                t.exitAt().atZone(CONFIG.zone()).toLocalTime(), pts);
+    }
+
+    /** How the day's recorded signal ended for each account (closed with its exit, or skipped and why), from live_trade. */
+    static String outcome(List<LiveTradeRecord> rows) {
+        LiveTradeRecord first = rows.get(0);
+        return "%s %s, %s".formatted(first.symbol(), first.side(), rows.stream().map(r -> {
+            if (!LiveTradeRecord.CLOSED.equals(r.status())) return "%s %s (%s)".formatted(r.accountId(), r.status(), r.skipReason());
+            String exit = Arrays.stream(ExitType.values()).filter(e -> e.code.equals(r.exitType())).findFirst()
+                    .map(Enum::name).orElse(r.exitType());
+            return "%s closed by %s at %s at %s CT (pnl %s$%.0f)".formatted(r.accountId(), exit, r.exitPrice(),
+                    r.exitTime().atZone(CONFIG.zone()).toLocalTime(), r.pnlUsd() < 0 ? "-" : "+", Math.abs(r.pnlUsd()));
+        }).collect(Collectors.joining("; ")));
     }
 
     private void warnOnce(String message) {
