@@ -8,6 +8,7 @@ import com.algofuture.bots.liquiditysweep.domain.service.ConvictionSelector.Reas
 import com.algofuture.bots.liquiditysweep.domain.service.MicroSizing.Size;
 import com.algofuture.shared.journal.domain.model.LiveTradeRecord;
 
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -74,21 +75,50 @@ public final class AlertMessages {
     }
 
     /** Outcome for one account, from its {@code live_trade} row once closed at {@code exitPrice}. */
-    public static String exit(LiveTradeRecord trade, ExitType exitType, double exitPrice, double pnlUsd) {
-        String how = switch (exitType) {
+    public static String exit(LiveTradeRecord trade, ExitType exitType, double exitPrice, Instant exitAt, double pnlUsd) {
+        double points = trade.isLong() ? exitPrice - trade.entryEstimate() : trade.entryEstimate() - exitPrice;
+        String verdict = Math.abs(pnlUsd) < 0.5 ? "BREAKEVEN, $0"
+                : pnlUsd < 0 ? "LOSS, you lose " + money(-pnlUsd) : "WIN, you make " + money(pnlUsd);
+        return """
+                %s · %s %s — %s
+                Result: %s with %d %s (%+.2f pts, %+.1fR)
+                Entry ≈ %s · exit %s at %s CT
+                Update max_loss_used for this account in funded_account with what the dashboard shows.""".formatted(
+                how(exitType), side(trade), trade.symbol(), trade.accountLabel(),
+                verdict, trade.contracts(), trade.micro(), points, points / risk(trade),
+                price(trade.entryEstimate()), price(exitPrice), HHMM.format(exitAt.atZone(CHICAGO)));
+    }
+
+    /** How a signal the account did not take ended, so the trader knows what skipping it meant. */
+    public static String skippedExit(LiveTradeRecord trade, ExitType exitType, double exitPrice, Instant exitAt) {
+        double points = trade.isLong() ? exitPrice - trade.signalPrice() : trade.signalPrice() - exitPrice;
+        double usd = points * MicroSizing.usdPerPoint(trade.symbol(), 1);
+        return """
+                SKIPPED SIGNAL ENDED · %s %s — %s
+                %s at %s, %s CT: 1 %s would have %s %s (%+.2f pts, %+.1fR). Nothing to do.""".formatted(
+                side(trade), trade.symbol(), trade.accountLabel(),
+                how(exitType).replaceFirst("^[✅🔴] ", ""), price(exitPrice), HHMM.format(exitAt.atZone(CHICAGO)),
+                MicroSizing.microOf(trade.symbol()), usd < 0 ? "lost" : "made", money(Math.abs(usd)), points,
+                points / risk(trade));
+    }
+
+    private static String how(ExitType exitType) {
+        return switch (exitType) {
             case STOP -> "🔴 STOP LOSS HIT";
             case TARGET -> "✅ TAKE PROFIT HIT";
             case CLOSE -> "CLOSED AT 3:00 PM CT";
             case TIME -> "TIME EXIT";
             case OPEN -> "OPEN";
         };
-        return """
-                %s · %s %s — %s
-                Result: %s%s with %d %s (exit %s)
-                Update max_loss_used for this account in funded_account with what the dashboard shows.""".formatted(
-                how, trade.isLong() ? "BUY" : "SELL", trade.symbol(), trade.accountLabel(),
-                pnlUsd < 0 ? "you lose " : "you make ", money(Math.abs(pnlUsd)), trade.contracts(), trade.micro(),
-                price(exitPrice));
+    }
+
+    private static String side(LiveTradeRecord trade) {
+        return trade.isLong() ? "BUY" : "SELL";
+    }
+
+    /** Points from the signal price to the stop loss: 1R. */
+    private static double risk(LiveTradeRecord trade) {
+        return Math.abs(trade.signalPrice() - trade.stopLoss());
     }
 
     public static String closeReminder(String symbol, boolean isLong, List<String> accountLabels) {

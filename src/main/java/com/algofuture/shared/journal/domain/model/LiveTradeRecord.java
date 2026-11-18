@@ -20,6 +20,11 @@ public record LiveTradeRecord(Long id, LocalDate tradeDay, String accountId, Str
         return OPEN.equals(status);
     }
 
+    /** Open, or skipped and the signal's outcome not recorded yet (the trader still hears how it ended). */
+    public boolean awaitsOutcome() {
+        return isOpen() || (SKIPPED.equals(status) && exitType == null);
+    }
+
     public boolean isLong() {
         return "long".equals(side);
     }

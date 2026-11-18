@@ -21,6 +21,9 @@ public interface LiveTradePort {
     /** False when the row was already closed. */
     boolean close(long id, String exitType, Instant exitTime, double exitPrice, double pnlUsd);
 
+    /** How the signal ended for a skipped row (it stays skipped, no P&L); false when already recorded. */
+    boolean recordSkippedOutcome(long id, String exitType, Instant exitTime, double exitPrice);
+
     /** How many of {@code ids} this call flagged (0 = someone already sent the reminder). */
     int markReminderSent(List<Long> ids);
 }

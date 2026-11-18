@@ -35,6 +35,11 @@ public class LiveTradeAdapter implements LiveTradePort {
     }
 
     @Override
+    public boolean recordSkippedOutcome(long id, String exitType, Instant exitTime, double exitPrice) {
+        return repository.recordSkippedOutcome(id, exitType, exitTime, exitPrice);
+    }
+
+    @Override
     public int markReminderSent(List<Long> ids) {
         return repository.markReminderSent(ids);
     }

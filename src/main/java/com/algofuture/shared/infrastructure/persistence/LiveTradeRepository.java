@@ -112,6 +112,21 @@ public class LiveTradeRepository {
                 .executeUpdate() > 0;
     }
 
+    /** Records how the signal ended on a skipped row; false when it was already recorded. */
+    @Transactional
+    public boolean recordSkippedOutcome(long id, String exitType, Instant exitTime, double exitPrice) {
+        return entityManager.createNativeQuery("""
+                        UPDATE live_trade
+                           SET exit_type = :exitType, exit_time = :exitTime, exit_price = :exitPrice, updated_at = now()
+                         WHERE id = :id AND status = 'skipped' AND exit_type IS NULL
+                        """)
+                .setParameter("exitType", exitType)
+                .setParameter("exitTime", exitTime.atOffset(ZoneOffset.UTC))
+                .setParameter("exitPrice", exitPrice)
+                .setParameter("id", id)
+                .executeUpdate() > 0;
+    }
+
     /** Flags the close reminder as sent; returns how many rows THIS call flagged. */
     @Transactional
     public int markReminderSent(List<Long> ids) {

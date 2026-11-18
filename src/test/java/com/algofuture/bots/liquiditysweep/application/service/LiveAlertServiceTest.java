@@ -80,6 +80,17 @@ class LiveAlertServiceTest {
             return false;
         }
 
+        public synchronized boolean recordSkippedOutcome(long id, String exitType, Instant exitTime, double exitPrice) {
+            for (int i = 0; i < rows.size(); i++) {
+                LiveTradeRecord r = rows.get(i);
+                if (r.id() == id && LiveTradeRecord.SKIPPED.equals(r.status()) && r.exitType() == null) {
+                    rows.set(i, with(r, id, r.status(), exitType, exitTime, exitPrice, null, r.reminderSent()));
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public synchronized int markReminderSent(List<Long> ids) {
             int n = 0;
             for (int i = 0; i < rows.size(); i++) {
@@ -163,7 +174,8 @@ class LiveAlertServiceTest {
         service.tick(Instant.parse("2026-11-11T16:11:20Z"));
         assertEquals(2, sent.size());
         assertTrue(sent.get(1).startsWith("✅ TAKE PROFIT HIT · SELL NQ — NYS · The Thunder 25k"), sent.get(1));
-        assertTrue(sent.get(1).contains("Result: you make $360 with 1 MNQ"), sent.get(1));
+        assertTrue(sent.get(1).contains("Result: WIN, you make $360 with 1 MNQ (+180.00 pts, +3.0R)"), sent.get(1));
+        assertTrue(sent.get(1).contains("Entry ≈ 21,620.00 · exit 21,440.00 at 10:05 CT"), sent.get(1));
         assertEquals(LiveTradeRecord.CLOSED, store.rows.get(0).status());
         assertEquals("tp", store.rows.get(0).exitType());
         assertEquals(360, store.rows.get(0).pnlUsd(), 1e-9);
@@ -184,7 +196,8 @@ class LiveAlertServiceTest {
         trade = trade(21680, ExitType.STOP, -1.0);
         restarted.tick(Instant.parse("2026-11-11T15:40:20Z"));
         assertEquals(2, sent.size());
-        assertTrue(sent.get(1).startsWith("🔴 STOP LOSS HIT") && sent.get(1).contains("you lose $120"), sent.get(1));
+        assertTrue(sent.get(1).startsWith("🔴 STOP LOSS HIT") && sent.get(1).contains("Result: LOSS, you lose $120 with 1 MNQ (-60.00 pts, -1.0R)"),
+                sent.get(1));
         assertTrue(restarted.tick(Instant.parse("2026-11-11T15:45:20Z")).endsWith("closed by STOP at 21680.0 at 10:05 CT (pnl -$120)"));
     }
 
@@ -230,11 +243,16 @@ class LiveAlertServiceTest {
 
         trade = trade(21698, ExitType.TARGET, 3.0);
         service.tick(Instant.parse("2026-11-11T16:10:20Z"));
-        assertEquals(3, sent.size());
-        assertTrue(sent.get(2).contains("Otra"), sent.get(2));
+        service.tick(Instant.parse("2026-11-11T16:11:20Z"));
+        assertEquals(4, sent.size());                                // each account hears how it ended, once
+        assertEquals("SKIPPED SIGNAL ENDED · SELL NQ — NYS · The Thunder 25k\nTAKE PROFIT HIT at 21,386.00, 10:05 CT: "
+                + "1 MNQ would have made $468 (+234.00 pts, +3.0R). Nothing to do.", sent.get(2));
+        assertTrue(sent.get(3).startsWith("✅ TAKE PROFIT HIT · SELL NQ — Otra") && sent.get(3).contains("WIN, you make $936"), sent.get(3));
+        assertEquals(LiveTradeRecord.SKIPPED, store.rows.get(0).status());
+        assertEquals(null, store.rows.get(0).pnlUsd());
 
         assertEquals("today's trade done: NQ short, nys-25k skipped (1 micro risks more than the account's max risk per "
-                        + "trade); other-50k closed by TARGET at 21386.0 at 10:05 CT (pnl +$936)",
+                        + "trade), signal ended by TARGET at 21386.0 at 10:05 CT; other-50k closed by TARGET at 21386.0 at 10:05 CT (pnl +$936)",
                 service.tick(Instant.parse("2026-11-11T16:20:20Z")));
     }
 
@@ -283,10 +301,18 @@ class LiveAlertServiceTest {
     void tooRiskyForOneMicro_isAnnouncedAsSkipped_once() {
         trade = trade(21795, ExitType.OPEN, null);                   // 175 points: 1 MNQ = $350 > $127
         service.tick(Instant.parse("2026-11-11T15:06:20Z"));
-        assertEquals("today's trade done: NQ short, nys-25k skipped (1 micro risks more than the account's max risk per trade)",
-                service.tick(Instant.parse("2026-11-11T15:07:20Z")));
+        assertTrue(service.tick(Instant.parse("2026-11-11T15:07:20Z")).endsWith("no open trade; still open, last 21620.0 (+0.00 pts)"));
         assertEquals(1, sent.size());
         assertTrue(sent.get(0).contains("DO NOT TRADE"), sent.get(0));
+
+        trade = trade(21795, ExitType.STOP, -1.0);                   // the skipped signal still gets its ending, once
+        service.tick(Instant.parse("2026-11-11T15:40:20Z"));
+        service.tick(Instant.parse("2026-11-11T15:41:20Z"));
+        assertEquals(2, sent.size());
+        assertEquals("SKIPPED SIGNAL ENDED · SELL NQ — NYS · The Thunder 25k\nSTOP LOSS HIT at 21,795.00, 10:05 CT: "
+                + "1 MNQ would have lost $350 (-175.00 pts, -1.0R). Nothing to do.", sent.get(1));
+        assertEquals("today's trade done: NQ short, nys-25k skipped (1 micro risks more than the account's max risk per trade), "
+                + "signal ended by STOP at 21795.0 at 10:05 CT", service.tick(Instant.parse("2026-11-11T15:45:20Z")));
     }
 
     @Test
@@ -319,7 +345,8 @@ class LiveAlertServiceTest {
         assertEquals(Instant.parse("2026-11-11T21:05:00Z"), backtestTo.get(backtestTo.size() - 1).toInstant());
         assertEquals(LiveTradeRecord.CLOSED, store.rows.get(0).status());
         assertEquals("session_close", store.rows.get(0).exitType());
-        assertTrue(sent.get(sent.size() - 1).contains("CLOSED AT 3:00 PM CT"), sent.get(sent.size() - 1));
+        assertTrue(sent.get(sent.size() - 1).startsWith("CLOSED AT 3:00 PM CT"), sent.get(sent.size() - 1));
+        assertTrue(sent.get(sent.size() - 1).contains("Result: LOSS, you lose $120 with 1 MNQ (-60.00 pts, -1.0R)"), sent.get(sent.size() - 1));
     }
 
     @Test

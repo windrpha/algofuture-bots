@@ -145,7 +145,7 @@ public class LiveAlertService {
             warningSent = staleToday = false;
         }
         List<LiveTradeRecord> today = trades.findDay(day);
-        if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::isOpen)) return "today's trade done: " + outcome(today);
+        if (!today.isEmpty() && today.stream().noneMatch(LiveTradeRecord::awaitsOutcome)) return "today's trade done: " + outcome(today);
 
         Instant to = Instant.ofEpochSecond(now.getEpochSecond() / BAR.toSeconds() * BAR.toSeconds());
         Map<String, Double> lastClose = lastClosesIfComplete(to);
@@ -191,17 +191,25 @@ public class LiveAlertService {
         SweepTrade t = pick.trade();
         String what = "%s pick (%s)".formatted(announced ? "announced" : "tracking", describe(pick));
         List<LiveTradeRecord> open = today.stream().filter(LiveTradeRecord::isOpen).toList();
-        if (open.isEmpty()) return what + ", no open trade";
+        List<LiveTradeRecord> pendingOutcome = today.stream().filter(LiveTradeRecord::awaitsOutcome).toList();
         if (t.exitType() != ExitType.OPEN) {
-            for (LiveTradeRecord row : open) {
+            for (LiveTradeRecord row : pendingOutcome) {
+                if (!row.isOpen()) {                                 // skipped: still tell the trader how it ended
+                    if (trades.recordSkippedOutcome(row.id(), t.exitType().code, t.exitAt(), t.exitPrice())) {
+                        alerts.send(AlertMessages.skippedExit(row, t.exitType(), t.exitPrice(), t.exitAt()));
+                    }
+                    continue;
+                }
                 double pnl = (row.isLong() ? t.exitPrice() - row.entryEstimate() : row.entryEstimate() - t.exitPrice())
                         * MicroSizing.usdPerPoint(row.symbol(), row.contracts());
                 if (trades.close(row.id(), t.exitType().code, t.exitAt(), t.exitPrice(), pnl)) {
-                    alerts.send(AlertMessages.exit(row, t.exitType(), t.exitPrice(), pnl));
+                    alerts.send(AlertMessages.exit(row, t.exitType(), t.exitPrice(), t.exitAt(), pnl));
                 }
             }
-            return what + ", exit " + t.exitType() + " for " + open.size() + " trade(s)";
-        } else if (!time.isBefore(CLOSE_REMINDER)) {
+            return what + ", exit " + t.exitType() + " for " + pendingOutcome.size() + " row(s)";
+        }
+        if (open.isEmpty()) return what + ", no open trade; " + progress(pick, last);
+        if (!time.isBefore(CLOSE_REMINDER)) {
             List<LiveTradeRecord> pending = open.stream().filter(r -> !r.reminderSent()).toList();
             if (!pending.isEmpty() && trades.markReminderSent(pending.stream().map(LiveTradeRecord::id).toList()) > 0) {
                 alerts.send(AlertMessages.closeReminder(pick.contract().root(),
@@ -268,9 +276,13 @@ public class LiveAlertService {
     static String outcome(List<LiveTradeRecord> rows) {
         LiveTradeRecord first = rows.get(0);
         return "%s %s, %s".formatted(first.symbol(), first.side(), rows.stream().map(r -> {
-            if (!LiveTradeRecord.CLOSED.equals(r.status())) return "%s %s (%s)".formatted(r.accountId(), r.status(), r.skipReason());
             String exit = Arrays.stream(ExitType.values()).filter(e -> e.code.equals(r.exitType())).findFirst()
                     .map(Enum::name).orElse(r.exitType());
+            if (!LiveTradeRecord.CLOSED.equals(r.status())) {
+                String ended = r.exitType() == null ? "" : ", signal ended by %s at %s at %s CT".formatted(exit, r.exitPrice(),
+                        r.exitTime().atZone(CONFIG.zone()).toLocalTime());
+                return "%s %s (%s)%s".formatted(r.accountId(), r.status(), r.skipReason(), ended);
+            }
             return "%s closed by %s at %s at %s CT (pnl %s$%.0f)".formatted(r.accountId(), exit, r.exitPrice(),
                     r.exitTime().atZone(CONFIG.zone()).toLocalTime(), r.pnlUsd() < 0 ? "-" : "+", Math.abs(r.pnlUsd()));
         }).collect(Collectors.joining("; ")));
