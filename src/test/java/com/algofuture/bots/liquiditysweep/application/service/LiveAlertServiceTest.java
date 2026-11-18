@@ -308,6 +308,21 @@ class LiveAlertServiceTest {
     }
 
     @Test
+    void stillOpenAtTheBell_isClosedOnceThe1500CandleIsIn() {
+        trade = trade(21680, ExitType.OPEN, null);
+        service.tick(Instant.parse("2026-11-11T15:06:20Z"));
+        service.tick(Instant.parse("2026-11-11T21:04:20Z"));         // 15:04 CT: candles up to 15:00, still open
+        assertEquals(LiveTradeRecord.OPEN, store.rows.get(0).status());
+
+        trade = trade(21680, ExitType.CLOSE, -0.5);                  // the backtest flattens on the 15:00 candle
+        service.tick(Instant.parse("2026-11-11T21:05:20Z"));         // the minute loop runs at :20 past 15:05
+        assertEquals(Instant.parse("2026-11-11T21:05:00Z"), backtestTo.get(backtestTo.size() - 1).toInstant());
+        assertEquals(LiveTradeRecord.CLOSED, store.rows.get(0).status());
+        assertEquals("session_close", store.rows.get(0).exitType());
+        assertTrue(sent.get(sent.size() - 1).contains("CLOSED AT 3:00 PM CT"), sent.get(sent.size() - 1));
+    }
+
+    @Test
     void dollarsComeFromTheCurrentPrice_andALateEntryIsFlagged() {
         trade = trade(21680, ExitType.OPEN, null);                   // short at 21,620, stop 21,680, target 21,440
         lastPrice = 21580;                                           // already 40 points (> 0.5R) in favor
@@ -342,8 +357,8 @@ class LiveAlertServiceTest {
     @Test
     void sessionWindow() {
         assertTrue(LiveAlertService.inSession(Instant.parse("2026-11-11T14:31:00Z")));      // 08:31 CT
-        assertTrue(LiveAlertService.inSession(Instant.parse("2026-11-11T21:05:00Z")));      // 15:05 CT
-        assertTrue(!LiveAlertService.inSession(Instant.parse("2026-11-11T21:06:00Z")));
+        assertTrue(LiveAlertService.inSession(Instant.parse("2026-11-11T21:10:00Z")));      // 15:10 CT
+        assertTrue(!LiveAlertService.inSession(Instant.parse("2026-11-11T21:11:00Z")));
         assertTrue(!LiveAlertService.inSession(Instant.parse("2026-11-14T16:00:00Z")));     // Saturday
     }
 

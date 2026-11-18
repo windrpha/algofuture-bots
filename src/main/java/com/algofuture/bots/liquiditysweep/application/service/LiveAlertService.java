@@ -56,7 +56,8 @@ public class LiveAlertService {
 
     private static final Logger LOG = Logger.getLogger(LiveAlertService.class);
     private static final Duration BAR = Duration.ofMinutes(5);
-    private static final LocalTime FIRST_RUN = LocalTime.of(8, 31), LAST_RUN = LocalTime.of(15, 5);
+    /** The 15:00 flat needs the 15:00 candle, closed from 15:05 on: the loop keeps running a few minutes past that. */
+    private static final LocalTime FIRST_RUN = LocalTime.of(8, 31), LAST_RUN = LocalTime.of(15, 10);
     private static final LocalTime CLOSE_REMINDER = LocalTime.of(14, 55);
     /** A pick first seen later than this after its entry (e.g. after a restart) is not announced: too late to take. */
     private static final Duration STALE = Duration.ofMinutes(10);
@@ -297,7 +298,7 @@ public class LiveAlertService {
         return enabled;
     }
 
-    /** Whether {@code now} falls in the window the loop works in (weekdays 08:31–15:05 Chicago). */
+    /** Whether {@code now} falls in the window the loop works in (weekdays 08:31–15:10 Chicago). */
     public static boolean inSession(Instant now) {
         ZonedDateTime ct = now.atZone(CONFIG.zone());
         LocalTime time = ct.toLocalTime();
