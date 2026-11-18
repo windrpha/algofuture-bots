@@ -1,8 +1,8 @@
 name: AlgoFuture Bots
 
-# Same flow as the data service: on every push to main, run the tests, build the Quarkus native image and push it
-# to Amazon ECR tagged latest and with the commit SHA. The ECS service runs that image; this workflow does not
-# change the service itself.
+# On every push to main: run the tests, build the Quarkus native image, push it to Amazon ECR tagged latest and with
+# the commit SHA, then roll the ECS service so it runs the new image. The task definition points at :latest, so a
+# forced new deployment is enough (no new task definition revision).
 
 on:
   push:
@@ -11,6 +11,8 @@ on:
 
 env:
   ECR_REPOSITORY: dev-v1-algofuture-bots
+  ECS_CLUSTER: dev-v1-algofuture-cluster
+  ECS_SERVICE: dev-v1-algofuture-bots
 
 # a newer push to main supersedes an older one still building, so ECR's latest always ends on the newest commit
 concurrency:
@@ -71,3 +73,10 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # the live alert loop is idempotent across restarts (live_trade is its state), so rolling mid-session is safe
+      - name: Deploy to Amazon ECS
+        run: |
+          aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment \
+            --query 'service.deployments[0].[id,status]' --output text
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE
